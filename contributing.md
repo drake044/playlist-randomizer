@@ -28,7 +28,13 @@ SPOTIPY_CLIENT_SECRET='your-client-secret'
 SPOTIPY_REDIRECT_URI='[http://localhost:8080/callback/](http://localhost:8080/callback/)'
 ```
 
-after configuiring the env file , just run the script main.py
+after configuiring the env file , 
+install the dependencies vy running this command :
+
+```markdown
+pip install -r requirements.txt
+```
+just run the script main.py
 
  
 
