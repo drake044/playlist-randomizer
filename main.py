@@ -1,3 +1,5 @@
+
+import csv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import random
@@ -6,7 +8,7 @@ from colorama import Fore, Style
 from dotenv import load_dotenv
 from tqdm import tqdm
 import os
-import time  # Used for simulating progress
+import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -61,47 +63,95 @@ def fetch_genres(track_id):
     track = sp.track(track_id)
     artist_id = track['album']['artists'][0]['id']
     artist = sp.artist(artist_id)
-    return artist.get('genres', [])
+    genres = artist.get('genres', [])
+    return genres
 
-# Display tracks with genres
-def display_tracks_with_genres(tracks):
-    for idx, track in enumerate(tracks, start=1):
-        track_name = track['track']['name']
-        artist_name = track['track']['artists'][0]['name']
-        track_genres = fetch_genres(track['track']['id'])
+# Fetch recommended tracks based on genres
+def fetch_recommended_tracks(genres, limit=10):
+    recommendations = []
+    unique_genres = list(set(genres))  # Remove duplicate genres
+    
+    # Fallback genre if no recommendations found for the provided genres
+    fallback_genres = ['pop', 'electronic']
+    
+    # If no valid genres found, default to fallback genres
+    if not unique_genres:
+        unique_genres = fallback_genres
+    
+    print(f"Fetching recommendations for genres: {unique_genres}")  # Debug statement
+    
+    # Try fetching recommendations for each genre until limit is reached
+    with tqdm(total=limit, desc="Fetching Recommendations", ncols=100) as pbar:
+        for genre in unique_genres:
+            if len(recommendations) >= limit:
+                break
+            try:
+                recs = sp.recommendations(seed_genres=[genre], limit=min(5, limit-len(recommendations)))
+                if recs and recs['tracks']:
+                    recommendations.extend(recs['tracks'])
+                    pbar.update(len(recs['tracks']))
+            except Exception as e:
+                print(f"Error fetching recommendations for genre {genre}: {e}")
+    
+    # If we still don't have enough recommendations, use fallback genres
+    if len(recommendations) < limit:
+        print(f"Insufficient recommendations. Fetching fallback genres: {fallback_genres}")
+        for genre in fallback_genres:
+            if len(recommendations) >= limit:
+                break
+            try:
+                recs = sp.recommendations(seed_genres=[genre], limit=min(5, limit-len(recommendations)))
+                recommendations.extend(recs['tracks'])
+                pbar.update(len(recs['tracks']))
+            except Exception as e:
+                print(f"Error fetching fallback recommendations for genre {genre}: {e}")
+    
+    return recommendations[:limit]
+
+# Export track details to CSV
+def export_tracks_to_csv(tracks, filename="randomized_tracks.csv"):
+    with open(filename, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
         
-        # Display track and its genres
-        print(f"{Fore.GREEN}{idx}. {track_name} by {artist_name} {Fore.YELLOW}[Genres: {', '.join(track_genres)}]")
-
-# Randomize tracks along with genre-based recommendations (with progress bar)
-def randomize_with_genres(tracks):
-    # Collect genres from the tracks
-    genres_set = set()
-    print("\nFetching genres and recommendations for similar tracks...")
-    
-    # Add progress bar for genre collection and randomization
-    with tqdm(total=len(tracks), desc="Progress", ncols=100) as pbar:
+        # Write the header row
+        writer.writerow(['Track Name', 'Artist', 'Duration (Minutes)', 'Genres', 'Track URI'])
+        
+        # Write each track's information
         for track in tracks:
-            genres = fetch_genres(track['track']['id'])
-            genres_set.update(genres)
-            pbar.update(1)
-    
-    # Fetch recommendations based on these genres
-    all_tracks = tracks.copy()  # Start with the existing tracks
-    print("\nFetching recommendations based on genres...")
-    
-    # Add progress bar for fetching recommended tracks
-    with tqdm(total=len(genres_set), desc="Fetching Recommended Tracks", ncols=100) as pbar:
-        for genre in genres_set:
-            recommendations = sp.recommendations(seed_genres=[genre], limit=5)
-            for rec_track in recommendations['tracks']:
-                all_tracks.append({
-                    'track': rec_track  # Using the same structure as fetched tracks
-                })
-            pbar.update(1)
-    
-    # Shuffle all tracks (current playlist + recommended tracks)
+            track_name = track['track']['name']
+            artist_name = track['track']['artists'][0]['name']
+            duration_ms = track['track']['duration_ms']
+            duration_min = round(duration_ms / 60000, 2)  # Convert to minutes
+            track_genres = fetch_genres(track['track']['id'])
+            track_uri = track['track']['uri']
+            
+            # Write the row to the CSV file
+            writer.writerow([track_name, artist_name, duration_min, ', '.join(track_genres), track_uri])
+        
+    print(f"Track information exported to {filename}")
+
+# Randomize tracks with optional genre-based recommendations (discovery mode)
+def randomize_with_genres(tracks, discovery_mode=False, total_limit=10):
+    genres_set = set()
+
+    print("\nFetching genres from current playlist...")
+    for track in tracks:
+        genres = fetch_genres(track['track']['id'])
+        genres_set.update(genres)
+
+    if discovery_mode:
+        recommended_tracks = fetch_recommended_tracks(list(genres_set), limit=(total_limit - len(tracks)))
+        all_tracks = tracks + [{'track': rec} for rec in recommended_tracks]
+    else:
+        all_tracks = tracks
+
     random.shuffle(all_tracks)
+    all_tracks = all_tracks[:total_limit]
+
+    # Debug: Print URIs of all tracks to ensure both original and recommended are included
+    for idx, track in enumerate(all_tracks):
+        print(f"{idx + 1}: {track['track']['name']} - {track['track']['uri']}")
+
     return all_tracks
 
 # Add tracks to a playlist with a progress bar
@@ -111,7 +161,6 @@ def add_tracks_to_playlist(playlist_id, tracks):
     # Add progress bar for adding tracks
     print("\nAdding tracks to the new playlist:")
     with tqdm(total=len(track_uris), desc="Adding Tracks", ncols=100) as pbar:
-        # We add tracks in chunks of 100 as per Spotify's API limit
         for i in range(0, len(track_uris), 100):
             sp.playlist_add_items(playlist_id, track_uris[i:i+100])
             pbar.update(100 if len(track_uris) - i > 100 else len(track_uris) - i)
@@ -120,8 +169,8 @@ def add_tracks_to_playlist(playlist_id, tracks):
 def simulate_playlist_creation_progress():
     print("\nCreating new playlist...")
     with tqdm(total=100, desc="Creating Playlist", ncols=100) as pbar:
-        for _ in range(5):  # Simulate 5 steps of progress
-            time.sleep(0.3)  # Simulating delay
+        for _ in range(5):
+            time.sleep(0.3)
             pbar.update(20)
 
 # Create a new playlist
@@ -148,29 +197,30 @@ def main():
     tracks = fetch_tracks(playlist_id)
     print(f"Fetched {len(tracks)} tracks.")
     
-    # Display tracks with genres
-    print("\nTracks and their genres:")
-    display_tracks_with_genres(tracks)
-
     # Ask the user if they want to randomize with genres
     use_genre_based_randomization = input("\nDo you want to randomize and include tracks from similar genres? (yes/no): ").lower()
-    if use_genre_based_randomization == 'yes':
-        randomized_tracks = randomize_with_genres(tracks)
-    else:
-        random.shuffle(tracks)
-        randomized_tracks = tracks
+    discovery_mode = use_genre_based_randomization == 'yes'
+    
+    # Randomize and optionally add new tracks
+    total_limit = int(input("Enter the total number of tracks you want in the final playlist: "))
+    randomized_tracks = randomize_with_genres(tracks, discovery_mode=discovery_mode, total_limit=total_limit)
     
     print("\nRandomized Playlist:")
     print("--------------------")
     for idx, track in enumerate(randomized_tracks, start=1):
         print(f"{idx}. {track['track']['name']} by {track['track']['artists'][0]['name']}")
     
+    # Export track details to a CSV file
+    export_to_csv = input("\nWould you like to export the track details to a CSV file? (yes/no): ").lower()
+    if export_to_csv == 'yes':
+        export_tracks_to_csv(randomized_tracks)
+    
     create_new_playlist = input("\nWould you like to create a new playlist with these tracks? (yes/no): ").lower()
     if create_new_playlist == 'yes':
-        new_playlist_name = input("Enter the name for the new playlist: ")
-        new_playlist_id = create_playlist(new_playlist_name)
+        playlist_name = input("Enter a name for the new playlist: ")
+        new_playlist_id = create_playlist(playlist_name)
         add_tracks_to_playlist(new_playlist_id, randomized_tracks)
-        print(f"New playlist '{new_playlist_name}' created successfully!")
+        print(f"New playlist '{playlist_name}' created successfully!")
 
 if __name__ == "__main__":
     main()
